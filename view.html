@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>麻雀 成績</title>
+<style>
+  :root { --bg:#f5f6f8; --card:#fff; --line:#d9dce1; --text:#1f2430; --sub:#667085; --ok:#18794e; --ng:#c0392b; --accent:#2b5fd9; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font-family:-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:16px; }
+  main { max-width:640px; margin:0 auto; padding:12px 12px 40px; }
+  h1 { font-size:20px; margin:8px 0 2px; }
+  .top { display:flex; justify-content:space-between; align-items:baseline; }
+  .top a { font-size:13px; color:var(--accent); text-decoration:none; }
+  .sub { color:var(--sub); font-size:13px; margin-bottom:10px; }
+  .tabs { display:flex; gap:6px; margin-bottom:10px; }
+  .tabs button { flex:1; padding:9px 4px; font-size:14px; font-weight:600; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--sub); }
+  .tabs button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  select { width:100%; padding:9px; font-size:16px; border:1px solid var(--line); border-radius:8px; background:#fff; color:var(--text); margin-bottom:10px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px 10px; margin-bottom:10px; overflow-x:auto; }
+  table { width:100%; border-collapse:collapse; font-size:15px; font-variant-numeric:tabular-nums; }
+  th, td { text-align:right; padding:7px 4px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { font-size:12px; color:var(--sub); font-weight:600; }
+  tr:last-child td { border-bottom:0; }
+  th:nth-child(-n+2), td:nth-child(-n+2) { text-align:left; }
+  td.name { font-weight:600; }
+  .plus { color:var(--ok); } .minus { color:var(--ng); }
+  .link { color:var(--accent); cursor:pointer; }
+  .game { padding:6px 0; border-bottom:1px solid var(--line); }
+  .game:last-child { border-bottom:0; }
+  .game .at { font-size:12px; color:var(--sub); margin-bottom:2px; }
+  .game table td, .game table th { border-bottom:0; padding:2px 4px; font-size:14px; }
+  .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; padding:4px 0 8px; }
+  .stat { text-align:center; }
+  .stat b { display:block; font-size:18px; font-variant-numeric:tabular-nums; }
+  .stat span { font-size:11px; color:var(--sub); }
+  .empty, .err { color:var(--sub); font-size:14px; padding:12px 4px; }
+  .err { color:var(--ng); }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><h1>麻雀 成績</h1><a href="./">入力へ</a></div>
+  <div class="sub" id="sub">読み込み中…</div>
+  <div id="app" style="display:none">
+    <select id="season"></select>
+    <div class="tabs">
+      <button data-t="rank" class="on">ランキング</button>
+      <button data-t="games">対局</button>
+      <button data-t="player">個人</button>
+    </div>
+    <div id="v-rank"></div>
+    <div id="v-games" style="display:none"></div>
+    <div id="v-player" style="display:none"><select id="who"></select><div id="whoBody"></div></div>
+  </div>
+</main>
+<script>
+var API = 'https://script.google.com/macros/s/AKfycbx5YdAM2orXTVJZ5n58xbFInvWxplmvCDrkvh4MN08JXew6x536XyC_XfSvV0nWO4QL/exec';
+var ALL = '全期間';
+var DATA = null, tab = 'rank';
+
+function $(id) { return document.getElementById(id); }
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+function r1(x) { return Math.round(x * 10) / 10; }
+function sgn(x) { var v = r1(x); return (v > 0 ? '+' : '') + v.toFixed(1); }
+function cls(x) { return r1(x) > 0 ? 'plus' : (r1(x) < 0 ? 'minus' : ''); }
+function pct(x) { return (x * 100).toFixed(1) + '%'; }
+
+function load() {
+  fetch(API + '?action=view')
+    .then(function (r) { return r.json(); })
+    .then(function (j) {
+      if (!j.ok) throw new Error(j.error || 'error');
+      DATA = j.data;
+      init();
+    })
+    .catch(function (e) {
+      $('sub').className = 'err';
+      $('sub').textContent = '読み込めませんでした: ' + e.message;
+    });
+}
+
+function init() {
+  var sel = $('season');
+  var list = [ALL].concat(DATA.seasons);
+  sel.innerHTML = list.map(function (n) { return '<option>' + esc(n) + '</option>'; }).join('');
+  sel.value = DATA.current && list.indexOf(DATA.current) >= 0 ? DATA.current : ALL;
+  sel.onchange = render;
+  $('who').onchange = renderPlayer;
+  Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {
+    b.onclick = function () { tab = b.getAttribute('data-t'); render(); };
+  });
+  $('sub').textContent = '';
+  $('app').style.display = '';
+  render();
+}
+
+function rowsOf() {
+  var s = $('season').value;
+  return DATA.rows.filter(function (r) { return s === ALL || r.season === s; });
+}
+
+function aggregate(rows) {
+  var agg = {}, order = [];
+  rows.forEach(function (r) {
+    var a = agg[r.id];
+    if (!a) { a = agg[r.id] = { id: r.id, name: r.name, games: 0, total: 0, rankSum: 0, c: [0, 0, 0, 0] }; order.push(a); }
+    a.name = r.name;
+    a.games++; a.total += r.pt; a.rankSum += r.rank; a.c[r.rank - 1]++;
+  });
+  order.sort(function (a, b) { return (r1(b.total) - r1(a.total)) || (a.rankSum / a.games - b.rankSum / b.games); });
+  order.forEach(function (a, i) {
+    var p = order[i - 1];
+    a.place = (p && r1(p.total) === r1(a.total)) ? p.place : i + 1;
+  });
+  return order;
+}
+
+function render() {
+  Array.prototype.forEach.call(document.querySelectorAll('.tabs button'), function (b) {
+    b.className = b.getAttribute('data-t') === tab ? 'on' : '';
+  });
+  $('v-rank').style.display = tab === 'rank' ? '' : 'none';
+  $('v-games').style.display = tab === 'games' ? '' : 'none';
+  $('v-player').style.display = tab === 'player' ? '' : 'none';
+  var rows = rowsOf();
+  renderRank(rows);
+  renderGames(rows);
+  renderWho(rows);
+}
+
+function renderRank(rows) {
+  var agg = aggregate(rows);
+  if (!agg.length) { $('v-rank').innerHTML = '<div class="card empty">まだ対局がありません</div>'; return; }
+  var h = '<div class="card"><table><tr><th>順</th><th>名前</th><th>合計pt</th><th>半荘</th><th>平均順位</th><th>1位率</th><th>ラス率</th></tr>';
+  agg.forEach(function (a) {
+    h += '<tr><td>' + a.place + '</td><td class="name link" data-id="' + esc(a.id) + '">' + esc(a.name) + '</td>' +
+      '<td class="' + cls(a.total) + '">' + sgn(a.total) + '</td><td>' + a.games + '</td>' +
+      '<td>' + (a.rankSum / a.games).toFixed(2) + '</td><td>' + pct(a.c[0] / a.games) + '</td><td>' + pct(a.c[3] / a.games) + '</td></tr>';
+  });
+  $('v-rank').innerHTML = h + '</table></div>';
+  Array.prototype.forEach.call($('v-rank').querySelectorAll('.link'), function (el) {
+    el.onclick = function () { $('who').value = el.getAttribute('data-id'); tab = 'player'; render(); };
+  });
+}
+
+function renderGames(rows) {
+  var map = {}, ids = [];
+  rows.forEach(function (r) {
+    if (!map[r.game]) { map[r.game] = []; ids.push(r.game); }
+    map[r.game].push(r);
+  });
+  if (!ids.length) { $('v-games').innerHTML = '<div class="card empty">まだ対局がありません</div>'; return; }
+  ids.sort(function (a, b) { return map[a][0].at < map[b][0].at ? 1 : map[a][0].at > map[b][0].at ? -1 : 0; });
+  var h = '<div class="card">';
+  ids.slice(0, 50).forEach(function (g) {
+    var rs = map[g].slice().sort(function (a, b) { return a.rank - b.rank; });
+    h += '<div class="game"><div class="at">' + esc(rs[0].at) + '　' + esc(rs[0].season) + '</div><table>';
+    rs.forEach(function (r) {
+      h += '<tr><td>' + r.rank + '位</td><td class="name">' + esc(r.name) + '</td><td>' + r.score.toLocaleString() +
+        '</td><td class="' + cls(r.pt) + '">' + sgn(r.pt) + '</td></tr>';
+    });
+    h += '</table></div>';
+  });
+  $('v-games').innerHTML = h + '</div>';
+}
+
+function renderWho(rows) {
+  var agg = aggregate(rows);
+  var cur = $('who').value;
+  $('who').innerHTML = agg.map(function (a) { return '<option value="' + esc(a.id) + '">' + esc(a.name) + '</option>'; }).join('');
+  if (agg.some(function (a) { return a.id === cur; })) $('who').value = cur;
+  renderPlayer();
+}
+
+function renderPlayer() {
+  var id = $('who').value;
+  var rows = rowsOf().filter(function (r) { return r.id === id; });
+  if (!rows.length) { $('whoBody').innerHTML = '<div class="card empty">データがありません</div>'; return; }
+  var a = aggregate(rows)[0];
+  var h = '<div class="card"><div class="stats">' +
+    '<div class="stat"><b class="' + cls(a.total) + '">' + sgn(a.total) + '</b><span>合計pt</span></div>' +
+    '<div class="stat"><b>' + a.games + '</b><span>半荘</span></div>' +
+    '<div class="stat"><b>' + (a.rankSum / a.games).toFixed(2) + '</b><span>平均順位</span></div>' +
+    '<div class="stat"><b>' + a.c.join('-') + '</b><span>1-2-3-4位</span></div>' +
+    '<div class="stat"><b>' + pct(a.c[0] / a.games) + '</b><span>1位率</span></div>' +
+    '<div class="stat"><b>' + pct(a.c[3] / a.games) + '</b><span>ラス率</span></div></div></div>';
+  rows = rows.slice().sort(function (x, y) { return x.at < y.at ? 1 : x.at > y.at ? -1 : 0; });
+  h += '<div class="card"><table><tr><th>日時</th><th>席</th><th>順位</th><th>素点</th><th>pt</th></tr>';
+  rows.slice(0, 50).forEach(function (r) {
+    h += '<tr><td>' + esc(r.at) + '</td><td>' + esc(r.seat) + '</td><td>' + r.rank + '位</td><td>' + r.score.toLocaleString() +
+      '</td><td class="' + cls(r.pt) + '">' + sgn(r.pt) + '</td></tr>';
+  });
+  $('whoBody').innerHTML = h + '</table></div>';
+}
+
+load();
+</script>
+</body>
+</html>
